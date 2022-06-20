@@ -1,4 +1,4 @@
-include ':app'
+include ':app', ':fetch2core', ':fetch2okhttp', ":fetch2"
 
 def localPropertiesFile = new File(rootProject.projectDir, "local.properties")
 def properties = new Properties()

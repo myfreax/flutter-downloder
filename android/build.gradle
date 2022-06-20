@@ -46,5 +46,6 @@ android {
 }
 
 dependencies {
+    implementation project(':fetch2')
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
 }
