@@ -1,22 +1,29 @@
 package com.myfreax.downloader
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.annotation.NonNull
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.tonyodev.fetch2.*
+import com.tonyodev.fetch2.database.DownloadInfo
 import com.tonyodev.fetch2.exception.FetchException
 import com.tonyodev.fetch2.util.DEFAULT_AUTO_RETRY_ATTEMPTS
 import com.tonyodev.fetch2.util.DEFAULT_GROUP_ID
 import com.tonyodev.fetch2.util.defaultNetworkType
 import com.tonyodev.fetch2.util.defaultPriority
 import com.tonyodev.fetch2core.DownloadBlock
-import com.tonyodev.fetch2core.Func
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+
+
+data class FileURL(val file: String, val url: String)
 
 /** DownloaderPlugin */
 class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
@@ -26,7 +33,9 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
   }
 
   private lateinit var appContext: Context
-
+  private val json by lazy {
+    Gson()
+  }
   private val fetch by lazy {
     Fetch.Impl.getInstance(
       FetchConfiguration.Builder(appContext)
@@ -50,7 +59,7 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
 
 
     fetchListenerEventChannel =
-      EventChannel(flutterPluginBinding.binaryMessenger, "esp_touch_sending")
+      EventChannel(flutterPluginBinding.binaryMessenger, "downloaderEventChannel")
     fetchListenerEventChannel.setStreamHandler(object : EventChannel.StreamHandler {
       override fun onCancel(arguments: Any?) {
         downloaderEventSink = null
@@ -76,10 +85,16 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
         pause(args["id"] as Int, result)
       }
       "remove" -> {
-        remove(args["ids"] as List<Int>, result)
+        val ids = (args["ids"] as ArrayList<*>).toList().map {
+          it as Int
+        }
+        remove(ids, result)
       }
       "delete" -> {
-        delete(args["ids"] as List<Int>, result)
+        val ids = (args["ids"] as ArrayList<*>).toList().map {
+          it as Int
+        }
+        delete(ids, result)
       }
       "resume" -> {
         resume(args["id"] as Int, result)
@@ -93,8 +108,17 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
       "getDownloadsInGroup" -> {
         getDownloadsInGroup(args["groupId"] as Int, result)
       }
-
-      "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
+      "groupingDownload" -> {
+        val groupId = args["groupId"] as Int
+        val listType = object : TypeToken<ArrayList<FileURL?>?>() {}.type
+        val fileURLs: List<FileURL> = Gson().fromJson(args["fileURLs"] as String, listType)
+        val requests = fileURLs.map {
+          val request = Request(it.url, it.file)
+          request.groupId = groupId
+          request
+        }
+        groupingDownload(requests, result)
+      }
       else -> result.notImplemented()
     }
   }
@@ -115,21 +139,26 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
     tag: String? = null,
     autoRetryMaxAttempts: Int = DEFAULT_AUTO_RETRY_ATTEMPTS
   ): Int {
-    val request = Request(url, file)
-    request.networkType = networkType
-    request.autoRetryMaxAttempts = autoRetryMaxAttempts
-    request.groupId = groupId
-    request.priority = priority
-    request.tag = tag
-    request.headers = headers
-    fetch.enqueue(request, { result.success(it.id) }) {
-      result.error(
-        it.value.toString(),
-        it.name,
-        it
-      )
+    try {
+      val request = Request(url, file)
+      request.networkType = networkType
+      request.autoRetryMaxAttempts = autoRetryMaxAttempts
+      request.groupId = groupId
+      request.priority = priority
+      request.tag = tag
+      request.headers = headers
+      fetch.enqueue(request, { result.success(it.id) }) {
+        result.error(
+          it.value.toString(),
+          it.name,
+          it
+        )
+      }
+      return request.id
+    } catch (e: FetchException) {
+      result.error(e.hashCode().toString(), e.message, e.stackTrace)
     }
-    return request.id
+    return -1
   }
 
   private fun pause(id: Int, result: Result): Int {
@@ -174,21 +203,30 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
 
   private fun getDownloads(result: Result) {
     try {
-      fetch.getDownloads(object : Func<List<Download>> {
-        override fun call(downloads: List<Download>) {
-          result.success(downloads)
+      fetch.getDownloads { downloads ->
+        val results = downloads.map {
+          val hash = hashMapOf<String, Any>()
+          hash["progress"] = it.progress
+          hash["download"] = it
+          hash
         }
-      })
+        result.success(json.toJson(results))
+      }
     } catch (e: FetchException) {
       result.error(e.hashCode().toString(), e.message, e.stackTrace)
     }
-
   }
 
   private fun getDownloadsWithStatus(status: Status, result: Result) {
     try {
-      fetch.getDownloadsWithStatus(status) {
-        result.success(it)
+      fetch.getDownloadsWithStatus(status) { downloads ->
+        val results = downloads.map {
+          val hash = hashMapOf<String, Any>()
+          hash["progress"] = it.progress
+          hash["download"] = it
+          hash
+        }
+        result.success(json.toJson(results))
       }
     } catch (e: FetchException) {
       result.error(e.hashCode().toString(), e.message, e.stackTrace)
@@ -197,47 +235,56 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
 
   private fun getDownloadsInGroup(groupId: Int, result: Result) {
     try {
-      fetch.getDownloadsInGroup(groupId) {
-        result.success(it)
+      fetch.getDownloadsInGroup(groupId) { downloads ->
+        val results = downloads.map {
+          val hash = hashMapOf<String, Any>()
+          hash["progress"] = it.progress
+          hash["download"] = it
+          hash
+        }
+        result.success(json.toJson(results))
       }
     } catch (e: FetchException) {
       result.error(e.hashCode().toString(), e.message, e.stackTrace)
     }
   }
 
-  private fun groupDownload(urls: List<String>, result: Result) {
-    //处理每个url，并创建文件夹
-  }
-
-  private fun groupDownloadFile(file: String, urls: List<String>, result: Result) {
-    urls.map {
-      Request(it, file)
+  private fun groupingDownload(requests: List<Request>, result: Result) {
+    try {
+      fetch.enqueue(requests) {
+        result.success(json.toJson(it))
+      }
+    } catch (e: FetchException) {
+      result.error(e.hashCode().toString(), e.message, e.stackTrace)
     }
-  }
-
-  private fun startDownload() {
-    val url = "http://speedtest.ftp.otenet.gr/files/test100k.db"
-    val file = "/downloads/test.txt"
-    val request = Request(url, file)
-    request.priority = Priority.HIGH
-    request.networkType = NetworkType.ALL
-    request.addHeader("clientKey", "SD78DF93_3947&MVNGHE1WONG");
-    fetch.enqueue(request);
   }
 
   private val fetchListener: FetchListener = object : AbstractFetchListener() {
+    private val uiThreadHandler by lazy {
+      Handler(Looper.getMainLooper())
+    }
+
+    private fun success(eventName: String, download: Download, data: HashMap<String, Any>) {
+      data["eventName"] = eventName
+      data["download"] = download
+      data["progress"] = download.progress
+      uiThreadHandler.post {
+        downloaderEventSink?.success(json.toJson(data))
+      }
+    }
+
     override fun onCompleted(download: Download) {
-      Log.d(TAG,"onCompleted")
-      downloaderEventSink?.success(download)
+      Log.d(TAG, "onCompleted")
+      val hash = hashMapOf<String, Any>()
+      success("onCompleted", download, hash)
     }
 
     override fun onError(download: Download, error: Error, throwable: Throwable?) {
-      Log.d(TAG, "onError")
+      Log.d(TAG, "onError:${error.name}:${throwable?.message}")
       val hash = hashMapOf<String, Any>()
-      hash["download"] = download
-      hash["error"] = error
+      hash["error"] = error.name
       hash["message"] = throwable?.message ?: ""
-      downloaderEventSink?.success(hash)
+      success("onError", download, hash)
     }
 
     override fun onProgress(
@@ -245,28 +292,33 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
       etaInMilliSeconds: Long,
       downloadedBytesPerSecond: Long
     ) {
-      Log.d(TAG, "onProgress")
+      //Log.d(TAG, "onProgress")
       val hash = hashMapOf<String, Any>()
       hash["download"] = download
       hash["etaInMilliSeconds"] = etaInMilliSeconds
       hash["downloadedBytesPerSecond"] = downloadedBytesPerSecond
-      downloaderEventSink?.success(hash)
-
+      success("onProgress", download, hash)
     }
 
     override fun onAdded(download: Download) {
-      Log.d(TAG, download.progress.toString())
-      downloaderEventSink?.success(download)
+      Log.d(TAG, "onAdded")
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onAdded", download, hash)
     }
 
     override fun onCancelled(download: Download) {
       Log.d(TAG, "onCancelled")
-      downloaderEventSink?.success(download)
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onCancelled", download, hash)
     }
 
     override fun onDeleted(download: Download) {
       Log.d(TAG, "onDeleted")
-      downloaderEventSink?.success(download)
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onDeleted", download, hash)
     }
 
     override fun onDownloadBlockUpdated(
@@ -274,18 +326,19 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
       downloadBlock: DownloadBlock,
       totalBlocks: Int
     ) {
-      Log.d(TAG, "onDownloadBlockUpdated")
+      //Log.d(TAG, "onDownloadBlockUpdated")
       val hash = hashMapOf<String, Any>()
       hash["download"] = download
-      hash["DownloadBlock"] = downloadBlock
+      hash["downloadBlock"] = downloadBlock
       hash["totalBlocks"] = totalBlocks
-      downloaderEventSink?.success(hash)
-
+      success("onDownloadBlockUpdated", download, hash)
     }
 
     override fun onPaused(download: Download) {
       Log.d(TAG, "onPaused")
-      downloaderEventSink?.success(download)
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onPaused", download, hash)
     }
 
 
@@ -294,17 +347,21 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
       val hash = hashMapOf<String, Any>()
       hash["download"] = download
       hash["waitingOnNetwork"] = waitingOnNetwork
-      downloaderEventSink?.success(hash)
+      success("onQueued", download, hash)
     }
 
     override fun onRemoved(download: Download) {
       Log.d(TAG, "onRemoved")
-      downloaderEventSink?.success(download)
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onRemoved", download, hash)
     }
 
     override fun onResumed(download: Download) {
       Log.d(TAG, "onResumed")
-      downloaderEventSink?.success(download)
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onResumed", download, hash)
     }
 
     override fun onStarted(
@@ -317,12 +374,14 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
       hash["download"] = download
       hash["downloadBlocks"] = downloadBlocks
       hash["totalBlocks"] = totalBlocks
-      downloaderEventSink?.success(hash)
-
+      success("onStarted", download, hash)
     }
 
     override fun onWaitingNetwork(download: Download) {
       Log.d(TAG, "onWaitingNetwork")
+      val hash = hashMapOf<String, Any>()
+      hash["download"] = download
+      success("onWaitingNetwork", download, hash)
     }
   }
 }
