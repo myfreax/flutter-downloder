@@ -8,7 +8,6 @@ import androidx.annotation.NonNull
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.tonyodev.fetch2.*
-import com.tonyodev.fetch2.database.DownloadInfo
 import com.tonyodev.fetch2.exception.FetchException
 import com.tonyodev.fetch2.util.DEFAULT_AUTO_RETRY_ATTEMPTS
 import com.tonyodev.fetch2.util.DEFAULT_GROUP_ID
@@ -37,7 +36,7 @@ class DownloaderPlugin : FlutterPlugin, MethodCallHandler {
     Gson()
   }
   private val fetch by lazy {
-    Fetch.Impl.getInstance(
+    Fetch.getInstance(
       FetchConfiguration.Builder(appContext)
         .setDownloadConcurrentLimit(3)
         .build()
